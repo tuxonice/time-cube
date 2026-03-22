@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include "nvs_flash.h"
 
 String SendHTML(String alertMessage);
 
@@ -25,6 +26,7 @@ void setup()
   // 1. Read config
   Serial.println("Reading configuration");
   readConfig();
+  
 
   // 3. Connect to wifi STA or AP mode
   if(systemConfiguration.wifiNetwork == "" || systemConfiguration.wifiPassword == "" || !wifiConnect(15000)) {
@@ -66,7 +68,7 @@ void apConnect()
     IPAddress gateway(192,168,4,1);
     IPAddress subnet(255,255,255,0);
     Serial.println("Setting AP (Access Point)...");
-    WiFi.softAP("ESP32-PIXEL");
+    WiFi.softAP("TIME-CUBE");
     delay(2000); // VERY IMPORTANT
     WiFi.softAPConfig(localIP, gateway, subnet);
     WiFi.persistent(false);
@@ -104,6 +106,10 @@ void handle_Update()
       systemConfiguration.wifiPassword = webServer.arg("wifi-password");
   }
 
+  if (webServer.hasArg("settle-time")) {
+    systemConfiguration.settleTime = webServer.arg("settle-time").toInt();
+  }
+
   bool configFileSaved = saveConfig();
   String alertMessage = "";
   if(configFileSaved) {
@@ -116,20 +122,33 @@ void handle_Update()
 
 void readConfig()
 {
-  preferences.begin("time-cube-config", true);
+  if (!preferences.begin("time-cube", true)) {
+    Serial.println("Failed to open Preferences (read mode)!");
+    return;
+  }
+  
   systemConfiguration.wifiNetwork = preferences.getString("network", "");
   systemConfiguration.wifiPassword = preferences.getString("password", "");
-  systemConfiguration.settleTime = preferences.getString("settle-time", "");
+  systemConfiguration.settleTime = preferences.getInt("settle-time", 4000);
   preferences.end();
 }
 
 bool saveConfig()
 {
-  preferences.begin("time-cube-config", false);
-  bool ok = preferences.putString("network", systemConfiguration.wifiNetwork) &&
-            preferences.putString("password", systemConfiguration.wifiPassword) &&
-            preferences.putString("settle-time", systemConfiguration.settleTime);
+  if (!preferences.begin("time-cube", false))
+  {
+    Serial.println("Preferences begin() failed! (write mode)");
+    return false;
+  }
+
+  size_t n1 = preferences.putString("network", systemConfiguration.wifiNetwork);
+  size_t n2 = preferences.putString("password", systemConfiguration.wifiPassword);
+  size_t n3 = preferences.putInt("settle-time", systemConfiguration.settleTime);
+
   preferences.end();
+
+  bool ok = (n3 == sizeof(int32_t));
+
   return ok;
 }
 
@@ -142,7 +161,7 @@ String SendHTML(String alertMessage)
     ptr += String("</head><body><div class=\"container\"><div class=\"section-header\"><h1>Time Cube Configuration</h1></div>\n");
     ptr += alertMessage;
     ptr += String("<form action=\"/\" method=\"POST\">\n");
-    ptr += String("<h2>Wifi</h2> <label>Network</label> <input type=\"text\" name=\"wifi-network\" value=\"" + systemConfiguration.wifiNetwork + "\" required /> <label>Password</label><input type=\"password\" name=\"wifi-password\" value=\"**********\" required /><hr/><h2>Configuration</h2><label>Settle Time (ms)</label><input type=\"number\" name=\"settle-time\" value=\"\" required />\n");
+    ptr += String("<h2>Wifi</h2> <label>Network</label> <input type=\"text\" name=\"wifi-network\" value=\"" + systemConfiguration.wifiNetwork + "\" required /> <label>Password</label><input type=\"password\" name=\"wifi-password\" value=\"**********\" required /><hr/><h2>Configuration</h2><label>Settle Time (ms)</label><input type=\"number\" name=\"settle-time\" value=\"" + String(systemConfiguration.settleTime) + "\" required />\n");
     ptr += String("<input type=\"submit\" value=\"Save\"></form>\n");
     ptr += String("<footer><p>&copy; 2026 TLab</p> </footer></div></body></html>");
 
