@@ -1,6 +1,9 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <Wire.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include "nvs_flash.h"
 
 String SendHTML(String alertMessage);
@@ -11,12 +14,116 @@ struct Configuration {
    String wifiNetwork = "";
    String wifiPassword = "";
    int settleTime = 2000;
+   String endpointBaseUrl = "";
+   String endpointToken = "";
 };
 
 struct Configuration systemConfiguration;
 
 Preferences preferences;
 WebServer webServer(80);
+
+// MPU6050 — default I2C address (AD0 low)
+// SDA: GPIO 21, SCL: GPIO 22 (ESP32 defaults)
+#define MPU6050_ADDR 0x68
+
+// Face index → color mapping (adjust order to match physical cube orientation)
+const char* faceColors[6] = { "blue", "yellow", "red", "green", "orange", "white" };
+
+// Task IDs loaded from backend, indexed by face. -1 means not mapped.
+int faceTasks[6] = { -1, -1, -1, -1, -1, -1 };
+
+int8_t currentFace = -1;
+int8_t pendingFace = -1;
+unsigned long faceChangedAt = 0;
+
+void mpu6050Init()
+{
+  Wire.begin();
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x6B); // PWR_MGMT_1 register
+  Wire.write(0x00); // Wake up (clear sleep bit)
+  Wire.endTransmission();
+  Serial.println("MPU6050 initialized");
+}
+
+// Returns face index 0-5, or -1 if read fails.
+// Face mapping based on which axis has dominant gravity vector:
+//   0 (blue)   : +Z up
+//   1 (yellow) : -Z up
+//   2 (red)    : +X up
+//   3 (green)  : -X up
+//   4 (orange) : +Y up
+//   5 (white)  : -Y up
+int8_t readFace()
+{
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x3B); // ACCEL_XOUT_H register
+  if (Wire.endTransmission(false) != 0) return -1;
+  Wire.requestFrom(MPU6050_ADDR, 6, true);
+  if (Wire.available() < 6) return -1;
+
+  int16_t ax = (Wire.read() << 8) | Wire.read();
+  int16_t ay = (Wire.read() << 8) | Wire.read();
+  int16_t az = (Wire.read() << 8) | Wire.read();
+
+  int16_t absX = abs(ax);
+  int16_t absY = abs(ay);
+  int16_t absZ = abs(az);
+
+  if (absZ >= absX && absZ >= absY) return (az > 0) ? 0 : 1;
+  if (absX >= absY)                  return (ax > 0) ? 2 : 3;
+  return                                    (ay > 0) ? 4 : 5;
+}
+
+bool loadCubeConfig()
+{
+  if (systemConfiguration.endpointBaseUrl == "") {
+    Serial.println("No endpoint URL configured, skipping cube config load");
+    return false;
+  }
+
+  HTTPClient http;
+  http.begin(systemConfiguration.endpointBaseUrl + "/cube-config");
+  if (systemConfiguration.endpointToken != "") {
+    http.addHeader("Authorization", "Bearer " + systemConfiguration.endpointToken);
+  }
+
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("loadCubeConfig failed, HTTP %d\n", httpCode);
+    http.end();
+    return false;
+  }
+
+  String payload = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, payload);
+  if (err) {
+    Serial.print("loadCubeConfig JSON parse error: ");
+    Serial.println(err.c_str());
+    return false;
+  }
+
+  JsonObject faces = doc["faces"];
+  for (int i = 0; i < 6; i++) {
+    if (faces[faceColors[i]].is<JsonObject>()) {
+      faceTasks[i] = faces[faceColors[i]]["task_id"];
+      Serial.printf("  %s → task_id %d\n", faceColors[i], faceTasks[i]);
+    }
+  }
+
+  Serial.println("Cube config loaded");
+  return true;
+}
+
+void onFaceChanged(int8_t face)
+{
+  Serial.printf("Active face: %s (task_id: %d)\n", faceColors[face], faceTasks[face]);
+  // TODO: call backend API (stop previous task, start new task)
+}
 
 void setup()
 {
@@ -40,6 +147,11 @@ void setup()
 
   webServer.begin();
   Serial.println("HTTP server started");
+
+  if (!apMode) {
+    mpu6050Init();
+    loadCubeConfig();
+  }
 }
 
 bool wifiConnect(int timeout)
@@ -81,9 +193,31 @@ void apConnect()
 void loop()
 {
   webServer.handleClient();
-  if(apMode == true) {
-      delay(500);
+
+  if (apMode) {
+    delay(500);
+    return;
   }
+
+  int8_t rawFace = readFace();
+  if (rawFace < 0) {
+    delay(100);
+    return;
+  }
+
+  // Reset settle timer whenever the raw reading changes
+  if (rawFace != pendingFace) {
+    pendingFace = rawFace;
+    faceChangedAt = millis();
+  }
+
+  // Confirm face change only after it has been stable for settleTime ms
+  if (pendingFace != currentFace && (millis() - faceChangedAt) >= (unsigned long)systemConfiguration.settleTime) {
+    currentFace = pendingFace;
+    onFaceChanged(currentFace);
+  }
+
+  delay(100);
 }
 
 void handle_OnConnect()
@@ -110,6 +244,14 @@ void handle_Update()
     systemConfiguration.settleTime = webServer.arg("settle-time").toInt();
   }
 
+  if (webServer.hasArg("endpoint-base-url")) {
+    systemConfiguration.endpointBaseUrl = webServer.arg("endpoint-base-url");
+  }
+
+  if (webServer.hasArg("endpoint-token") && webServer.arg("endpoint-token") != "**********") {
+    systemConfiguration.endpointToken = webServer.arg("endpoint-token");
+  }
+
   bool configFileSaved = saveConfig();
   String alertMessage = "";
   if(configFileSaved) {
@@ -130,6 +272,8 @@ void readConfig()
   systemConfiguration.wifiNetwork = preferences.getString("network", "");
   systemConfiguration.wifiPassword = preferences.getString("password", "");
   systemConfiguration.settleTime = preferences.getInt("settle-time", 4000);
+  systemConfiguration.endpointBaseUrl = preferences.getString("endpoint-url", "");
+  systemConfiguration.endpointToken = preferences.getString("endpoint-token", "");
   preferences.end();
 }
 
@@ -144,10 +288,12 @@ bool saveConfig()
   size_t n1 = preferences.putString("network", systemConfiguration.wifiNetwork);
   size_t n2 = preferences.putString("password", systemConfiguration.wifiPassword);
   size_t n3 = preferences.putInt("settle-time", systemConfiguration.settleTime);
+  size_t n4 = preferences.putString("endpoint-url", systemConfiguration.endpointBaseUrl);
+  size_t n5 = preferences.putString("endpoint-token", systemConfiguration.endpointToken);
 
   preferences.end();
 
-  bool ok = (n3 == sizeof(int32_t));
+  bool ok = (n3 == sizeof(int32_t)) && (n4 > 0 || systemConfiguration.endpointBaseUrl.length() == 0) && (n5 > 0 || systemConfiguration.endpointToken.length() == 0);
 
   return ok;
 }
@@ -161,7 +307,7 @@ String SendHTML(String alertMessage)
     ptr += String("</head><body><div class=\"container\"><div class=\"section-header\"><h1>Time Cube Configuration</h1></div>\n");
     ptr += alertMessage;
     ptr += String("<form action=\"/\" method=\"POST\">\n");
-    ptr += String("<h2>Wifi</h2> <label>Network</label> <input type=\"text\" name=\"wifi-network\" value=\"" + systemConfiguration.wifiNetwork + "\" required /> <label>Password</label><input type=\"password\" name=\"wifi-password\" value=\"**********\" required /><hr/><h2>Configuration</h2><label>Settle Time (ms)</label><input type=\"number\" name=\"settle-time\" value=\"" + String(systemConfiguration.settleTime) + "\" required />\n");
+    ptr += String("<h2>Wifi</h2> <label>Network</label> <input type=\"text\" name=\"wifi-network\" value=\"" + systemConfiguration.wifiNetwork + "\" required /> <label>Password</label><input type=\"password\" name=\"wifi-password\" value=\"**********\" required /><hr/><h2>Configuration</h2><label>Settle Time (ms)</label><input type=\"number\" name=\"settle-time\" value=\"" + String(systemConfiguration.settleTime) + "\" required /><label>Endpoint Base URL</label><input type=\"text\" name=\"endpoint-base-url\" value=\"" + systemConfiguration.endpointBaseUrl + "\" /><label>Endpoint Security Token</label><input type=\"password\" name=\"endpoint-token\" value=\"**********\" />\n");
     ptr += String("<input type=\"submit\" value=\"Save\"></form>\n");
     ptr += String("<footer><p>&copy; 2026 TLab</p> </footer></div></body></html>");
 
