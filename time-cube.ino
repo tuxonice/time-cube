@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "nvs_flash.h"
 
@@ -34,6 +35,7 @@ const char* faceColors[6] = { "blue", "yellow", "red", "green", "orange", "white
 int faceTasks[6] = { -1, -1, -1, -1, -1, -1 };
 
 int8_t currentFace = -1;
+int8_t previousFace = -1;
 int8_t pendingFace = -1;
 unsigned long faceChangedAt = 0;
 
@@ -76,17 +78,40 @@ int8_t readFace()
   return                                    (ay > 0) ? 4 : 5;
 }
 
-bool loadCubeConfig()
+bool isHttps()
 {
-  if (systemConfiguration.endpointBaseUrl == "") {
-    Serial.println("No endpoint URL configured, skipping cube config load");
-    return false;
+  return systemConfiguration.endpointBaseUrl.startsWith("https://");
+}
+
+// Initialises an HTTPClient for the given path, handling HTTP and HTTPS.
+// The caller must call http.end() after use.
+// Returns false if no base URL is configured.
+bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const String& path)
+{
+  if (systemConfiguration.endpointBaseUrl == "") return false;
+
+  String url = systemConfiguration.endpointBaseUrl + path;
+  if (isHttps()) {
+    secureClient.setInsecure(); // skips certificate validation
+    http.begin(secureClient, url);
+  } else {
+    http.begin(url);
   }
 
-  HTTPClient http;
-  http.begin(systemConfiguration.endpointBaseUrl + "/cube-config");
   if (systemConfiguration.endpointToken != "") {
-    http.addHeader("Authorization", "Bearer " + systemConfiguration.endpointToken);
+    http.addHeader("X-Time-Cube-Token", systemConfiguration.endpointToken);
+  }
+  return true;
+}
+
+bool loadCubeConfig()
+{
+  HTTPClient http;
+  WiFiClientSecure secureClient;
+
+  if (!httpBegin(http, secureClient, "/cube-config")) {
+    Serial.println("No endpoint URL configured, skipping cube config load");
+    return false;
   }
 
   int httpCode = http.GET();
@@ -119,10 +144,39 @@ bool loadCubeConfig()
   return true;
 }
 
+bool postToEndpoint(String path)
+{
+  HTTPClient http;
+  WiFiClientSecure secureClient;
+
+  if (!httpBegin(http, secureClient, path)) return false;
+
+  int httpCode = http.POST("");
+  http.end();
+  return httpCode == HTTP_CODE_OK;
+}
+
 void onFaceChanged(int8_t face)
 {
   Serial.printf("Active face: %s (task_id: %d)\n", faceColors[face], faceTasks[face]);
-  // TODO: call backend API (stop previous task, start new task)
+
+  if (previousFace >= 0 && faceTasks[previousFace] >= 0) {
+    String path = "/stop/" + String(faceTasks[previousFace]);
+    Serial.printf("Stopping task_id %d\n", faceTasks[previousFace]);
+    if (!postToEndpoint(path)) {
+      Serial.println("Failed to stop previous task");
+    }
+  }
+
+  if (faceTasks[face] >= 0) {
+    String path = "/start/" + String(faceTasks[face]);
+    Serial.printf("Starting task_id %d\n", faceTasks[face]);
+    if (!postToEndpoint(path)) {
+      Serial.println("Failed to start new task");
+    }
+  }
+
+  previousFace = face;
 }
 
 void setup()
