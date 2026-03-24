@@ -1,11 +1,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
-#include <Wire.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include "nvs_flash.h"
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
 
 String SendHTML(String alertMessage);
 
@@ -24,9 +25,7 @@ struct Configuration systemConfiguration;
 Preferences preferences;
 WebServer webServer(80);
 
-// MPU6050 — default I2C address (AD0 low)
-// SDA: GPIO 21, SCL: GPIO 22 (ESP32 defaults)
-#define MPU6050_ADDR 0x68
+Adafruit_MPU6050 mpu;
 
 // Face index → color mapping (adjust order to match physical cube orientation)
 const char* faceColors[6] = { "blue", "yellow", "red", "green", "orange", "white" };
@@ -41,11 +40,12 @@ unsigned long faceChangedAt = 0;
 
 void mpu6050Init()
 {
-  Wire.begin();
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0x00); // Wake up (clear sleep bit)
-  Wire.endTransmission();
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    return;
+  }
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   Serial.println("MPU6050 initialized");
 }
 
@@ -59,19 +59,16 @@ void mpu6050Init()
 //   5 (white)  : -Y up
 int8_t readFace()
 {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(0x3B); // ACCEL_XOUT_H register
-  if (Wire.endTransmission(false) != 0) return -1;
-  Wire.requestFrom(MPU6050_ADDR, 6, true);
-  if (Wire.available() < 6) return -1;
+  sensors_event_t a, g, temp;
+  if (!mpu.getEvent(&a, &g, &temp)) return -1;
 
-  int16_t ax = (Wire.read() << 8) | Wire.read();
-  int16_t ay = (Wire.read() << 8) | Wire.read();
-  int16_t az = (Wire.read() << 8) | Wire.read();
+  float ax = a.acceleration.x;
+  float ay = a.acceleration.y;
+  float az = a.acceleration.z;
 
-  int16_t absX = abs(ax);
-  int16_t absY = abs(ay);
-  int16_t absZ = abs(az);
+  float absX = fabsf(ax);
+  float absY = fabsf(ay);
+  float absZ = fabsf(az);
 
   if (absZ >= absX && absZ >= absY) return (az > 0) ? 0 : 1;
   if (absX >= absY)                  return (ax > 0) ? 2 : 3;
