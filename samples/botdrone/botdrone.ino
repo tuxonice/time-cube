@@ -2,7 +2,6 @@
   Electronic Level
   mpu-6050-level.ino
   Uses MPU-6050 IMU
-  Displays on 128x64 OLED and LED
   
   DroneBot Workshop 2019
   https://dronebotworkshop.com
@@ -10,6 +9,7 @@
 
 // Include Wire Library for I2C
 #include <Wire.h>
+
 
 //Variables for Gyroscope
 int gyro_x, gyro_y, gyro_z;
@@ -31,7 +31,7 @@ void setup() {
 
   //Start I2C
   Wire.begin();
-
+  
   //Setup the registers of the MPU-6050                                                       
   setup_mpu_6050_registers(); 
   
@@ -124,13 +124,39 @@ void loop(){
   angle_roll_output = angle_roll_output * 0.9 + angle_roll * 0.1; 
   //Wait until the loop_timer reaches 4000us (250Hz) before starting the next loop  
   
-  // Print to Serial Monitor
-  //Serial.print(" | Angle  = "); Serial.println(angle_pitch_output);
+  // Print to Serial Monitor   
+  Serial.print(" | Angle  = "); Serial.println(angle_pitch_output);  
 
  while(micros() - loop_timer < 4000); 
  //Reset the loop timer                                
  loop_timer = micros();
+
+ delay(1000);
   
+}
+
+int getFace() {
+  long ax = acc_x;
+  long ay = acc_y;
+  long az = acc_z;
+
+  long absX = abs(ax);
+  long absY = abs(ay);
+  long absZ = abs(az);
+
+  // Determine dominant axis
+  if (absX > absY && absX > absZ) {
+    if (ax > 0) return 0; // +X
+    else return 1;        // -X
+  }
+  else if (absY > absX && absY > absZ) {
+    if (ay > 0) return 2; // +Y
+    else return 3;        // -Y
+  }
+  else {
+    if (az > 0) return 4; // +Z
+    else return 5;        // -Z
+  }
 }
 
 void setup_mpu_6050_registers(){
@@ -166,7 +192,7 @@ void setup_mpu_6050_registers(){
   //Set the requested starting register                                                    
   Wire.write(0x08); 
   //End the transmission                                                  
-  Wire.endTransmission();
+  Wire.endTransmission(); 
                                               
 }
 
