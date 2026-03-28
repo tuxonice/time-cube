@@ -3,10 +3,6 @@
 #include <Preferences.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
-#include "nvs_flash.h"
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 
 String SendHTML(String alertMessage);
 
@@ -24,56 +20,6 @@ struct Configuration systemConfiguration;
 
 Preferences preferences;
 WebServer webServer(80);
-
-Adafruit_MPU6050 mpu;
-
-// Face index → color mapping (adjust order to match physical cube orientation)
-const char* faceColors[6] = { "blue", "yellow", "red", "green", "orange", "white" };
-
-// Task IDs loaded from backend, indexed by face. -1 means not mapped.
-int faceTasks[6] = { -1, -1, -1, -1, -1, -1 };
-
-int8_t currentFace = -1;
-int8_t previousFace = -1;
-int8_t pendingFace = -1;
-unsigned long faceChangedAt = 0;
-
-void mpu6050Init()
-{
-  if (!mpu.begin()) {
-    Serial.println("Failed to find MPU6050 chip");
-    return;
-  }
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-  Serial.println("MPU6050 initialized");
-}
-
-// Returns face index 0-5, or -1 if read fails.
-// Face mapping based on which axis has dominant gravity vector:
-//   0 (blue)   : +Z up
-//   1 (yellow) : -Z up
-//   2 (red)    : +X up
-//   3 (green)  : -X up
-//   4 (orange) : +Y up
-//   5 (white)  : -Y up
-int8_t readFace()
-{
-  sensors_event_t a, g, temp;
-  if (!mpu.getEvent(&a, &g, &temp)) return -1;
-
-  float ax = a.acceleration.x;
-  float ay = a.acceleration.y;
-  float az = a.acceleration.z;
-
-  float absX = fabsf(ax);
-  float absY = fabsf(ay);
-  float absZ = fabsf(az);
-
-  if (absZ >= absX && absZ >= absY) return (az > 0) ? 0 : 1;
-  if (absX >= absY)                  return (ax > 0) ? 2 : 3;
-  return                                    (ay > 0) ? 4 : 5;
-}
 
 bool isHttps()
 {
@@ -101,45 +47,6 @@ bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const String& p
   return true;
 }
 
-bool loadCubeConfig()
-{
-  HTTPClient http;
-  WiFiClientSecure secureClient;
-
-  if (!httpBegin(http, secureClient, "/cube-config")) {
-    Serial.println("No endpoint URL configured, skipping cube config load");
-    return false;
-  }
-
-  int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("loadCubeConfig failed, HTTP %d\n", httpCode);
-    http.end();
-    return false;
-  }
-
-  String payload = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, payload);
-  if (err) {
-    Serial.print("loadCubeConfig JSON parse error: ");
-    Serial.println(err.c_str());
-    return false;
-  }
-
-  JsonObject faces = doc["faces"];
-  for (int i = 0; i < 6; i++) {
-    if (faces[faceColors[i]].is<JsonObject>()) {
-      faceTasks[i] = faces[faceColors[i]]["task_id"];
-      Serial.printf("  %s → task_id %d\n", faceColors[i], faceTasks[i]);
-    }
-  }
-
-  Serial.println("Cube config loaded");
-  return true;
-}
 
 bool postToEndpoint(String path)
 {
@@ -153,28 +60,6 @@ bool postToEndpoint(String path)
   return httpCode == HTTP_CODE_OK;
 }
 
-void onFaceChanged(int8_t face)
-{
-  Serial.printf("Active face: %s (task_id: %d)\n", faceColors[face], faceTasks[face]);
-
-  if (previousFace >= 0 && faceTasks[previousFace] >= 0) {
-    String path = "/stop/" + String(faceTasks[previousFace]);
-    Serial.printf("Stopping task_id %d\n", faceTasks[previousFace]);
-    if (!postToEndpoint(path)) {
-      Serial.println("Failed to stop previous task");
-    }
-  }
-
-  if (faceTasks[face] >= 0) {
-    String path = "/start/" + String(faceTasks[face]);
-    Serial.printf("Starting task_id %d\n", faceTasks[face]);
-    if (!postToEndpoint(path)) {
-      Serial.println("Failed to start new task");
-    }
-  }
-
-  previousFace = face;
-}
 
 void setup()
 {
@@ -199,10 +84,6 @@ void setup()
   webServer.begin();
   Serial.println("HTTP server started");
 
-  if (!apMode) {
-    mpu6050Init();
-    loadCubeConfig();
-  }
 }
 
 bool wifiConnect(int timeout)
@@ -248,24 +129,6 @@ void loop()
   if (apMode) {
     delay(500);
     return;
-  }
-
-  int8_t rawFace = readFace();
-  if (rawFace < 0) {
-    delay(100);
-    return;
-  }
-
-  // Reset settle timer whenever the raw reading changes
-  if (rawFace != pendingFace) {
-    pendingFace = rawFace;
-    faceChangedAt = millis();
-  }
-
-  // Confirm face change only after it has been stable for settleTime ms
-  if (pendingFace != currentFace && (millis() - faceChangedAt) >= (unsigned long)systemConfiguration.settleTime) {
-    currentFace = pendingFace;
-    onFaceChanged(currentFace);
   }
 
   delay(100);
