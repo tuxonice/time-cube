@@ -50,7 +50,7 @@ void loop() {
   updateStableFace(detectedFace, stableMotion);
   printStatus(stableMotion, detectedFace);
 
-  delay(20);
+  delay(500);
 }
 
 void setupMPU() {
