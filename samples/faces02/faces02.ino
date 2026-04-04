@@ -231,12 +231,12 @@ void printStatus(bool stableMotion, int detectedFace) {
 
 const char* faceName(int face) {
   switch (face) {
-    case 0: return "+X";
-    case 1: return "-X";
-    case 2: return "+Y";
-    case 3: return "-Y";
-    case 4: return "+Z";
-    case 5: return "-Z";
+    case 0: return "RED";
+    case 1: return "ORANGE";
+    case 2: return "WHITE";
+    case 3: return "YELLOW";
+    case 4: return "GREEN";
+    case 5: return "BLUE";
     default: return "UNKNOWN";
   }
 }
