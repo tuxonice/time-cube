@@ -1,6 +1,8 @@
 #include "network.h"
 #include "config.h"
 
+static const char* CUBE_ID = "cube-xyz123";
+
 bool wifiConnect(int timeoutMs) {
   unsigned long startTime = millis();
 
@@ -47,12 +49,12 @@ void apConnect() {
   Serial.println(WiFi.softAPIP());
 }
 
-bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const String& path) {
+bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const char* faceName) {
   if (systemConfiguration.endpointBaseUrl == "") {
     return false;
   }
 
-  String url = systemConfiguration.endpointBaseUrl + path;
+  String url = systemConfiguration.endpointBaseUrl;
 
   secureClient.setInsecure();
   if (!http.begin(secureClient, url)) {
@@ -66,23 +68,70 @@ bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const String& p
   return true;
 }
 
-bool postToEndpoint(const String& path) {
-  HTTPClient http;
-  WiFiClientSecure secureClient;
+bool postToEndpoint(const String& face) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected");
+    return false;
+  }
 
-  if (!httpBegin(http, secureClient, path)) {
+  if (systemConfiguration.endpointBaseUrl.isEmpty()) {
     Serial.println("Endpoint not configured");
     return false;
   }
 
-  int httpCode = http.POST("");
-  http.end();
+  HTTPClient http;
+  WiFiClientSecure secureClient;
+
+  secureClient.setInsecure(); // ⚠️ skip cert validation
+
+  if (!http.begin(secureClient, systemConfiguration.endpointBaseUrl)) {
+    Serial.println("HTTP begin failed");
+    return false;
+  }
+
+  http.setTimeout(3000);
+  http.addHeader("Content-Type", "application/json");
+
+  if (!systemConfiguration.endpointToken.isEmpty()) {
+    http.addHeader("X-Time-Cube-Token", systemConfiguration.endpointToken);
+  }
+
+  // Build JSON payload
+  String payload;
+  payload.reserve(80);
+  payload += F("{\"cubeId\":\"");
+  payload += CUBE_ID;
+  payload += F("\",\"face\":\"");
+  payload += face;
+  payload += F("\"}");
+
+  int httpCode = http.POST(payload);
+
+  // 👇 GET RESPONSE BODY
+  String response = http.getString();
 
   Serial.print("POST ");
-  Serial.print(path);
+  Serial.print(systemConfiguration.endpointBaseUrl);
+  Serial.print(" payload=");
+  Serial.print(payload);
   Serial.print(" -> HTTP ");
   Serial.println(httpCode);
 
-  return httpCode > 0 && httpCode < 300;
-}
+  if (httpCode <= 0) {
+    Serial.print("Error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
 
+  // 👇 PRINT RESPONSE
+  if (httpCode > 0) {
+    Serial.print("Response: ");
+    Serial.println(response);
+  } else {
+    Serial.print("Error: ");
+    Serial.println(http.errorToString(httpCode));
+  }
+
+  http.end();
+
+  return httpCode >= 200 && httpCode < 300;
+}

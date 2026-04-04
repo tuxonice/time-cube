@@ -10,4 +10,3 @@ void loopMPU();
 const char* faceName(int face);
 
 #endif
-

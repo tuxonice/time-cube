@@ -240,8 +240,8 @@ static void onFaceChanged(int face) {
   lastPostedFace = face;
 
   if (WiFi.status() == WL_CONNECTED) {
-    String path = "/face/" + String(face);
-    postToEndpoint(path);
+    //String path = "/face/" + String(face);
+    postToEndpoint(faceName(face));
   }
 }
 
@@ -279,4 +279,3 @@ const char* faceName(int face) {
     default: return "UNKNOWN";
   }
 }
-

@@ -10,7 +10,6 @@ bool wifiConnect(int timeoutMs);
 void apConnect();
 
 bool httpBegin(HTTPClient& http, WiFiClientSecure& secureClient, const String& path);
-bool postToEndpoint(const String& path);
+bool postToEndpoint(const String& face);
 
 #endif
-
