@@ -12,7 +12,7 @@ void handle_OnConnect();
 void handle_NotFound();
 void handle_Update();
 
-String SendHTML(const String& alertMessage);
+void sendPage(const String& alertMessage);
 String getAlertMessageHtml(const String& type, const String& message);
 
 #endif
