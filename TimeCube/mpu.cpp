@@ -1,5 +1,7 @@
 #include "mpu.h"
 #include <Wire.h>
+#include <WiFi.h>
+#include <esp_sleep.h>
 #include "config.h"
 #include "network.h"
 
@@ -21,6 +23,11 @@ int stableFace = -1;
 int lastPostedFace = -1;
 unsigned long candidateSinceMs = 0;
 
+// Sleep state
+volatile bool motionDetected = false;
+unsigned long lastMotionTime = 0;
+bool isSleeping = false;
+
 // Tuning
 const float DOMINANCE_RATIO = 1.25f;
 const int GYRO_STABLE_THRESHOLD = 300;
@@ -37,6 +44,7 @@ static int getFaceFromAccel();
 static void updateStableFace(int detectedFace, bool stableMotion);
 static void printStatus(bool stableMotion, int detectedFace);
 static void onFaceChanged(int face);
+static void IRAM_ATTR motionISR();
 
 void setupMPU() {
   Wire.begin();
@@ -52,6 +60,33 @@ void setupMPU() {
 
   // Low pass filter
   writeRegister(0x1A, 0x03);
+}
+
+void setupMPUInterrupt() {
+  // Configure motion detection threshold (MOT_THR)
+  writeRegister(0x1F, systemConfiguration.motionThreshold);
+  
+  // Set motion detection duration (MOT_DUR) - 1 LSB = 1 ms @ 1 kHz
+  writeRegister(0x20, 1);  // 1 ms duration
+  
+  // Disable motion detection initially to configure it
+  writeRegister(0x38, 0x00);  // Clear INT_ENABLE
+  
+  // Configure motion detection on all axes
+  writeRegister(0x69, 0x07);  // Enable motion detection on X, Y, Z axes
+  
+  // Enable motion detection interrupt
+  writeRegister(0x38, 0x40);  // Enable MOT_EN bit in INT_ENABLE
+  
+  // Configure interrupt pin behavior (INT_PIN_CFG)
+  writeRegister(0x37, 0x20);  // INT pin active high, push-pull, latch until cleared
+  
+  // Attach interrupt handler
+  pinMode(systemConfiguration.interruptPin, INPUT_PULLDOWN);
+  attachInterrupt(digitalPinToInterrupt(systemConfiguration.interruptPin), motionISR, RISING);
+  
+  Serial.print("MPU interrupt configured on pin ");
+  Serial.println(systemConfiguration.interruptPin);
 }
 
 static void writeRegister(uint8_t reg, uint8_t value) {
@@ -245,8 +280,52 @@ static void onFaceChanged(int face) {
   }
 }
 
+static void IRAM_ATTR motionISR() {
+  motionDetected = true;
+}
+
+void enterSleepMode() {
+  if (!systemConfiguration.enableSleepMode || isSleeping) {
+    return;
+  }
+  
+  Serial.println("Entering deep sleep mode...");
+  isSleeping = true;
+  
+  // Configure wake-up source
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)systemConfiguration.interruptPin, HIGH);
+  
+  // Enter deep sleep
+  esp_deep_sleep_start();
+}
+
+void wakeFromInterrupt() {
+  // Clear the interrupt flag by reading the interrupt status register
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3A); // INT_STATUS register
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 1, (uint8_t)true);
+  Wire.read(); // Clear the interrupt
+  
+  motionDetected = false;
+  isSleeping = false;
+  lastMotionTime = millis();
+  
+  Serial.println("Woke from motion interrupt");
+}
+
 void loopMPU() {
   unsigned long now = millis();
+  
+  // Check if we should enter sleep mode
+  if (systemConfiguration.enableSleepMode && 
+      stableFace != -1 && 
+      !isSleeping && 
+      (now - lastMotionTime > systemConfiguration.sleepDelayMs)) {
+    enterSleepMode();
+    return;
+  }
+  
   if (now - lastSampleMs < SAMPLE_INTERVAL_MS) {
     return;
   }
@@ -259,6 +338,11 @@ void loopMPU() {
 
   bool stableMotion = isCubeStable();
   int detectedFace = -1;
+
+  // Update motion tracking
+  if (!stableMotion) {
+    lastMotionTime = now;
+  }
 
   if (stableMotion) {
     detectedFace = getFaceFromAccel();

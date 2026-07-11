@@ -6,6 +6,9 @@
 void setupMPU();
 void calibrateGyro();
 void loopMPU();
+void setupMPUInterrupt();
+void enterSleepMode();
+void wakeFromInterrupt();
 
 const char* faceName(int face);
 
