@@ -10,6 +10,10 @@ struct Configuration {
   int settleTime = 2000;
   String endpointBaseUrl = "";
   String endpointToken = "";
+  int interruptPin = 34;
+  bool enableSleepMode = true;
+  int motionThreshold = 20;
+  int sleepDelayMs = 5000;
 };
 
 extern Configuration systemConfiguration;
